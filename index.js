@@ -1,3 +1,4 @@
+
 const {
   Client,
   GatewayIntentBits,
@@ -74,7 +75,10 @@ client.once("ready", () => {
 client.on("messageCreate", async (message) => {
   if (!message.guild || message.author.bot) return;
 
-if (!isStaff) return;
+  const content = message.content.trim();
+  const args = content.split(/\s+/);
+  const command = args[0].toLowerCase();
+
   const commands = [
     "help", "ping", "ban", "kick", "timeout", "mute",
     "untimeout", "unmute", "warn", "warnings", "clearwarnings",
@@ -84,28 +88,68 @@ if (!isStaff) return;
   if (!commands.includes(command)) return;
 
   try {
+    // HELP COMMAND
     if (command === "help") {
-      return replyEmbed(message, [
-        "**BLACK FIRE BOT — COMMANDS**",
-        "`help` — Show commands",
-        "`ping` — Check bot latency",
-        "`ban @user [reason]`",
-        "`kick @user [reason]`",
-        "`timeout @user 10m [reason]`",
-        "`mute @user 10m [reason]`",
-        "`untimeout @user`",
-        "`unmute @user`",
-        "`warn @user [reason]`",
-        "`warnings @user`",
-        "`clearwarnings @user`",
-        "`purge 10` — Delete recent messages",
-        "`lock` / `unlock` — Lock or unlock channel",
-        "`role @user @role` — Add a role",
-        "`rrole @user @role` — Remove a role",
-        "",
-        "**No prefix or slash required.**",
-        "Use user and role mentions."
-      ].join("\n"));
+      const help = new EmbedBuilder()
+        .setColor(COLORS.red)
+        .setTitle("🔥 BLACK FIRE BOT — HELP MENU")
+        .setDescription(
+          "Welcome to Black Fire Bot!\n" +
+          "All commands work without a prefix or slash.\n\n" +
+          "━━━━━━━━━━━━━━━━━━"
+        )
+        .addFields(
+          {
+            name: "⚙️ General Commands",
+            value:
+              "`help` — Show all commands\n" +
+              "`ping` — Check bot latency"
+          },
+          {
+            name: "🛡️ Moderation",
+            value:
+              "`ban @user [reason]` — Ban a member\n" +
+              "`kick @user [reason]` — Kick a member\n" +
+              "`timeout @user 10m [reason]` — Timeout\n" +
+              "`mute @user 10m [reason]` — Timeout alias\n" +
+              "`untimeout @user` — Remove timeout\n" +
+              "`unmute @user` — Remove timeout\n" +
+              "`warn @user [reason]` — Warn a member\n" +
+              "`warnings @user` — View warnings\n" +
+              "`clearwarnings @user` — Clear warnings"
+          },
+          {
+            name: "🧹 Channel Management",
+            value:
+              "`purge 10` — Delete recent messages\n" +
+              "`lock` — Lock current channel\n" +
+              "`unlock` — Unlock current channel"
+          },
+          {
+            name: "🎭 Role Management",
+            value:
+              "`role @user @role` — Give a role\n" +
+              "`rrole @user @role` — Remove a role"
+          },
+          {
+            name: "⏱️ Duration Format",
+            value:
+              "`30s` — 30 seconds\n" +
+              "`10m` — 10 minutes\n" +
+              "`2h` — 2 hours\n" +
+              "`1d` — 1 day\n" +
+              "Maximum timeout: 28 days"
+          }
+        )
+        .setFooter({
+          text: "BLACK FIRE BOT • Use commands responsibly"
+        })
+        .setTimestamp();
+
+      return message.reply({
+        embeds: [help],
+        allowedMentions: { repliedUser: false }
+      });
     }
 
     if (command === "ping") {
@@ -135,50 +179,46 @@ if (!isStaff) return;
       return true;
     };
 
-    if (["ban", "kick", "timeout", "mute", "untimeout", "unmute",
-      "warn", "warnings", "clearwarnings", "purge", "lock", "unlock",
-      "role", "rrole"].includes(command)) {
-      const permissionMap = {
-        ban: PermissionsBitField.Flags.BanMembers,
-        kick: PermissionsBitField.Flags.KickMembers,
-        timeout: PermissionsBitField.Flags.ModerateMembers,
-        mute: PermissionsBitField.Flags.ModerateMembers,
-        untimeout: PermissionsBitField.Flags.ModerateMembers,
-        unmute: PermissionsBitField.Flags.ModerateMembers,
-        warn: PermissionsBitField.Flags.ModerateMembers,
-        warnings: PermissionsBitField.Flags.ModerateMembers,
-        clearwarnings: PermissionsBitField.Flags.ModerateMembers,
-        purge: PermissionsBitField.Flags.ManageMessages,
-        lock: PermissionsBitField.Flags.ManageChannels,
-        unlock: PermissionsBitField.Flags.ManageChannels,
-        role: PermissionsBitField.Flags.ManageRoles,
-        rrole: PermissionsBitField.Flags.ManageRoles
-      };
+    const permissionMap = {
+      ban: PermissionsBitField.Flags.BanMembers,
+      kick: PermissionsBitField.Flags.KickMembers,
+      timeout: PermissionsBitField.Flags.ModerateMembers,
+      mute: PermissionsBitField.Flags.ModerateMembers,
+      untimeout: PermissionsBitField.Flags.ModerateMembers,
+      unmute: PermissionsBitField.Flags.ModerateMembers,
+      warn: PermissionsBitField.Flags.ModerateMembers,
+      warnings: PermissionsBitField.Flags.ModerateMembers,
+      clearwarnings: PermissionsBitField.Flags.ModerateMembers,
+      purge: PermissionsBitField.Flags.ManageMessages,
+      lock: PermissionsBitField.Flags.ManageChannels,
+      unlock: PermissionsBitField.Flags.ManageChannels,
+      role: PermissionsBitField.Flags.ManageRoles,
+      rrole: PermissionsBitField.Flags.ManageRoles
+    };
 
+    if (permissionMap[command]) {
       if (!requirePermission(permissionMap[command])) return;
     }
 
-    if (["ban", "kick", "timeout", "mute", "untimeout", "unmute",
-      "warn", "warnings", "clearwarnings", "role", "rrole"].includes(command)) {
+    if ([
+      "ban", "kick", "timeout", "mute", "untimeout", "unmute",
+      "warn", "warnings", "clearwarnings", "role", "rrole"
+    ].includes(command)) {
       const target = await getTarget(message, args[1]);
 
       if (!target) {
         return replyEmbed(message, "❌ Mention a valid server member.", COLORS.red);
       }
 
-      if (target.id === message.author.id) {
-        return replyEmbed(message, "❌ You cannot target yourself.", COLORS.red);
-      }
-
-      if (target.id === client.user.id) {
-        return replyEmbed(message, "❌ You cannot target the bot.", COLORS.red);
+      if (target.id === message.author.id || target.id === client.user.id) {
+        return replyEmbed(message, "❌ You cannot target yourself or the bot.", COLORS.red);
       }
 
       if (
         target.roles.highest.position >= member.roles.highest.position &&
         message.guild.ownerId !== message.author.id
       ) {
-        return replyEmbed(message, "❌ Your role must be higher than the target's role.", COLORS.red);
+        return replyEmbed(message, "❌ Your highest role must be above the target's role.", COLORS.red);
       }
 
       if (target.roles.highest.position >= botMember.roles.highest.position) {
@@ -204,7 +244,7 @@ if (!isStaff) return;
 
         const duration = parseDuration(args[2] || "");
         if (!duration) {
-          return replyEmbed(message, "❌ Usage: `timeout @user 10m reason` (s, m, h, d; max 28d)", COLORS.red);
+          return replyEmbed(message, "❌ Usage: `timeout @user 10m reason` (maximum 28 days).", COLORS.red);
         }
 
         const timeoutReason = args.slice(3).join(" ") || "No reason provided";
@@ -221,13 +261,14 @@ if (!isStaff) return;
       if (command === "warn") {
         const key = `${message.guild.id}:${target.id}`;
         const list = warnings.get(key) || [];
+
         list.push({
           reason,
           moderator: message.author.tag,
           date: new Date().toISOString()
         });
-        warnings.set(key, list);
 
+        warnings.set(key, list);
         return replyEmbed(message, `⚠️ **${target.user.tag}** has ${list.length} warning(s).\nReason: ${reason}`, COLORS.green);
       }
 
@@ -253,12 +294,12 @@ if (!isStaff) return;
           return replyEmbed(message, "❌ Usage: `role @user @role` or `rrole @user @role`", COLORS.red);
         }
 
-        if (role.managed || role.id === message.guild.id) {
-          return replyEmbed(message, "❌ That role cannot be assigned or removed.", COLORS.red);
-        }
-
-        if (role.position >= botMember.roles.highest.position) {
-          return replyEmbed(message, "❌ Move my highest role above the role I need to manage.", COLORS.red);
+        if (
+          role.managed ||
+          role.id === message.guild.id ||
+          role.position >= botMember.roles.highest.position
+        ) {
+          return replyEmbed(message, "❌ I cannot manage that role. Check its position.", COLORS.red);
         }
 
         if (command === "role") {
@@ -288,12 +329,12 @@ if (!isStaff) return;
     if (command === "lock" || command === "unlock") {
       if (!requireBotPermission(PermissionsBitField.Flags.ManageChannels)) return;
 
-      const everyone = message.guild.roles.everyone;
       const canSend = command === "unlock";
 
-      await message.channel.permissionOverwrites.edit(everyone, {
-        SendMessages: canSend
-      });
+      await message.channel.permissionOverwrites.edit(
+        message.guild.roles.everyone,
+        { SendMessages: canSend ? null : false }
+      );
 
       return replyEmbed(
         message,
@@ -305,14 +346,10 @@ if (!isStaff) return;
     console.error("Command error:", error);
 
     if (error.code === 50013) {
-      return replyEmbed(message, "❌ Missing Discord permissions or role hierarchy prevents this action.", COLORS.red);
+      return replyEmbed(message, "❌ Missing permissions or role hierarchy issue.", COLORS.red);
     }
 
-    if (error.code === 50035) {
-      return replyEmbed(message, "❌ Invalid command arguments.", COLORS.red);
-    }
-
-    return replyEmbed(message, "❌ Command failed. Check Railway logs for details.", COLORS.red);
+    return replyEmbed(message, "❌ Command failed. Check Railway logs.", COLORS.red);
   }
 });
 
@@ -324,4 +361,8 @@ if (!process.env.DISCORD_TOKEN) {
   process.exit(1);
 }
 
-client.login(process.env.DISCORD_TOKEN);
+client.login(process.env.DISCORD_TOKEN).catch(error => {
+  console.error("❌ Discord login failed:", error.message);
+  process.exit(1);
+});
+      
