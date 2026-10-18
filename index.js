@@ -1,11 +1,12 @@
-
 const {
   Client,
   GatewayIntentBits,
   PermissionsBitField,
-  EmbedBuilder,
-  ChannelType
+  EmbedBuilder
 } = require("discord.js");
+
+const fs = require("fs");
+const path = require("path");
 
 const client = new Client({
   intents: [
@@ -16,120 +17,221 @@ const client = new Client({
   ]
 });
 
-// ================= CONFIG =================
+const DATA_FILE = path.join(__dirname, "bot-data.json");
 
-const PREFIX = ""; // No prefix, no slash commands
-
-// Highest role first, lowest role last
 const PROMOTION_ROLES = [
-  "1535922877499445289", // Head Admin
-  "1535920366550122596", // Admin
+  "1535922877499445289", // Helper
+  "1535920366550122596", // Mod
   "1555582030274764852", // Head Mod
-  "1535921160133287946",  // Mod
-  "1535921357991317544"   // Helper
+  "1535921160133287946", // Admin
+  "1535921357991317544"  // Head Admin
 ];
 
-const warnings = new Map();
+function loadData() {
+  try {
+    if (fs.existsSync(DATA_FILE)) {
+      return JSON.parse(fs.readFileSync(DATA_FILE, "utf8"));
+    }
+  } catch (error) {
+    console.error("Data load error:", error);
+  }
 
-const COLORS = {
-  red: 0xFF0000,
-  green: 0x00FF00,
-  blue: 0x0000FF
-};
+  return { warnings: {}, temporaryRoles: [] };
+}
 
-function embed(title, description, color = COLORS.blue) {
+const data = loadData();
+
+data.warnings ||= {};
+data.temporaryRoles ||= [];
+
+function saveData() {
+  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
+}
+
+function makeEmbed(title, description, color = 0xE53935) {
   return new EmbedBuilder()
+    .setColor(color)
     .setTitle(title)
     .setDescription(description)
-    .setColor(color)
     .setTimestamp();
 }
 
-function getDuration(text) {
-  const match = text?.match(/^(\d+)(s|m|h|d)$/i);
+function parseDuration(text) {
+  const match = String(text).match(/^(\d+)(s|m|h|d)$/i);
   if (!match) return null;
 
   const amount = Number(match[1]);
   const unit = match[2].toLowerCase();
 
-  const multipliers = {
+  const multiplier = {
     s: 1000,
     m: 60000,
     h: 3600000,
     d: 86400000
   };
 
-  const duration = amount * multipliers[unit];
+  const result = amount * multiplier[unit];
 
-  if (duration < 1000 || duration > 28 * 86400000) {
-    return null;
-  }
-
-  return duration;
+  if (!Number.isFinite(result) || result <= 0) return null;
+  return result;
 }
 
-function hasStaffPermission(member) {
-  return member.permissions.has([
-    PermissionsBitField.Flags.Administrator,
-    PermissionsBitField.Flags.ModerateMembers,
-    PermissionsBitField.Flags.BanMembers,
-    PermissionsBitField.Flags.KickMembers,
-    PermissionsBitField.Flags.ManageMessages,
-    PermissionsBitField.Flags.ManageChannels,
+function naturalDuration(text) {
+  const match = String(text).trim().match(
+    /^(\d+)\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?|days?)$/i
+  );
+
+  if (!match) return null;
+
+  const amount = Number(match[1]);
+  const unit = match[2].toLowerCase();
+
+  let multiplier = 1000;
+
+  if (unit.startsWith("min")) multiplier = 60000;
+  else if (unit.startsWith("h")) multiplier = 3600000;
+  else if (unit.startsWith("d")) multiplier = 86400000;
+
+  return amount * multiplier;
+}
+
+function getMember(message, text) {
+  const id = String(text || "").match(/\d{17,20}/)?.[0];
+  if (!id) return null;
+  return message.guild.members.cache.get(id) || null;
+}
+
+function getRole(guild, roleName) {
+  const cleanName = String(roleName || "")
+    .replace(/<@&(\d+)>/g, "$1")
+    .trim();
+
+  const id = cleanName.match(/^\d{17,20}$/)?.[0];
+
+  if (id) return guild.roles.cache.get(id) || null;
+
+  return guild.roles.cache.find(
+    role => role.name.toLowerCase() === cleanName.toLowerCase()
+  ) || null;
+}
+
+function isStaff(message) {
+  return message.member.permissions.has(
+    PermissionsBitField.Flags.Administrator
+  ) ||
+  message.member.permissions.has(
+    PermissionsBitField.Flags.ManageGuild
+  ) ||
+  message.member.permissions.has(
+    PermissionsBitField.Flags.ManageMessages
+  ) ||
+  message.member.permissions.has(
+    PermissionsBitField.Flags.ModerateMembers
+  ) ||
+  message.member.permissions.has(
+    PermissionsBitField.Flags.BanMembers
+  ) ||
+  message.member.permissions.has(
+    PermissionsBitField.Flags.KickMembers
+  ) ||
+  message.member.permissions.has(
     PermissionsBitField.Flags.ManageRoles
-  ]);
+  );
 }
 
-function getTarget(message) {
-  return message.mentions.members.first() || null;
+function canModerateTarget(message, target) {
+  if (!target) return false;
+  if (target.id === message.author.id) return false;
+  if (target.id === message.guild.ownerId) return false;
+
+  if (
+    message.author.id !== message.guild.ownerId &&
+    target.roles.highest.position >= message.member.roles.highest.position
+  ) {
+    return false;
+  }
+
+  return true;
 }
 
-function getRole(message, args) {
-  const mentionedRole = message.mentions.roles.first();
-  if (mentionedRole) return mentionedRole;
-
-  const possibleId = args.find(arg => /^\d{17,20}$/.test(arg));
-  if (!possibleId) return null;
-
-  return message.guild.roles.cache.get(possibleId) || null;
+function warningKey(guildId, userId) {
+  return `${guildId}_${userId}`;
 }
 
-async function getPromotionRoles(guild) {
-  const roles = [];
+function getWarnings(guildId, userId) {
+  return data.warnings[warningKey(guildId, userId)] || [];
+}
 
-  for (const roleId of PROMOTION_ROLES) {
-    const role = await guild.roles.fetch(roleId).catch(() => null);
+async function giveTemporaryRole(message, member, role, duration) {
+  if (!message.member.permissions.has(
+    PermissionsBitField.Flags.ManageRoles
+  )) {
+    return message.reply("❌ You need Manage Roles permission.");
+  }
 
-    if (!role) {
-      throw new Error(`Promotion role ID ${roleId} was not found.`);
+  if (!member || !role || !duration) {
+    return message.reply(
+      "Usage: `temprole @user VIP 10d`"
+    );
+  }
+
+  if (
+    role.managed ||
+    role.position >= message.guild.members.me.roles.highest.position
+  ) {
+    return message.reply(
+      "❌ I can't assign that role. Check my role hierarchy."
+    );
+  }
+
+  await member.roles.add(role);
+
+  data.temporaryRoles.push({
+    guildId: message.guild.id,
+    userId: member.id,
+    roleId: role.id,
+    expiresAt: Date.now() + duration
+  });
+
+  saveData();
+
+  return message.reply(
+    `✅ Gave ${role} to ${member} temporarily.`
+  );
+}
+
+async function removeExpiredRoles() {
+  for (let i = data.temporaryRoles.length - 1; i >= 0; i--) {
+    const item = data.temporaryRoles[i];
+
+    if (item.expiresAt > Date.now()) continue;
+
+    try {
+      const guild = client.guilds.cache.get(item.guildId);
+
+      if (guild) {
+        const member = await guild.members.fetch(item.userId)
+          .catch(() => null);
+
+        if (member && member.roles.cache.has(item.roleId)) {
+          await member.roles.remove(item.roleId)
+            .catch(console.error);
+        }
+      }
+    } catch (error) {
+      console.error("Temporary role expiry error:", error);
     }
 
-    roles.push(role);
+    data.temporaryRoles.splice(i, 1);
+    saveData();
   }
-
-  if (new Set(roles.map(role => role.id)).size !== roles.length) {
-    throw new Error("Duplicate role IDs are present in PROMOTION_ROLES.");
-  }
-
-  // Check that the Discord role hierarchy matches the configured order.
-  for (let i = 0; i < roles.length - 1; i++) {
-    if (roles[i].position <= roles[i + 1].position) {
-      throw new Error(
-        `Role hierarchy mismatch: ${roles[i].name} must be above ${roles[i + 1].name}.`
-      );
-    }
-  }
-
-  return roles;
 }
-
-// ================= READY =================
 
 client.once("ready", () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
+  console.log(`${client.user.tag} is online!`);
+  removeExpiredRoles();
+  setInterval(removeExpiredRoles, 60000);
 });
-
-// ================= MESSAGE COMMANDS =================
 
 client.on("messageCreate", async message => {
   if (!message.guild || message.author.bot) return;
@@ -140,430 +242,467 @@ client.on("messageCreate", async message => {
   const args = content.split(/\s+/);
   const command = args.shift().toLowerCase();
 
-  // Help and ping are available to everyone.
-  if (command === "ping") {
-    return message.reply(
-      `🏓 Pong! ${client.ws.ping}ms`
-    );
-  }
+  const naturalGive = content.match(
+    /^give\s+<@!?(\d+)>\s+(.+?)\s+role\s+for\s+(\d+\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?))$/i
+  );
 
-  if (command === "help") {
-    const helpText = [
-      "**BLACK FIRE BOT — COMMANDS**",
-      "",
-      "**General**",
-      "`help` — Show commands",
-      "`ping` — Check bot latency",
-      "",
-      "**Moderation**",
-      "`ban @user [reason]`",
-      "`kick @user [reason]`",
-      "`timeout @user 10m [reason]`",
-      "`mute @user 10m [reason]`",
-      "`untimeout @user`",
-      "`unmute @user`",
-      "`warn @user [reason]`",
-      "`warnings @user`",
-      "`clearwarnings @user`",
-      "`purge 10`",
-      "`lock` / `unlock`",
-      "",
-      "**Roles**",
-      "`role @user @role` — Add role",
-      "`rrole @user @role` — Remove role",
-      "`promote @user` — Promote one level",
-      "`demote @user` — Demote one level",
-      "",
-      "Commands need the relevant Discord permissions."
-    ].join("\n");
+  const naturalRemove = content.match(
+    /^remove\s+(.+?)\s+from\s+<@!?(\d+)>$/i
+  );
 
+  const naturalBan = content.match(
+    /^ban\s+<@!?(\d+)>\s+for\s+(.+)$/i
+  );
+
+  const naturalTimeout = content.match(
+    /^timeout\s+<@!?(\d+)>\s+for\s+(\d+\s*(?:seconds?|secs?|minutes?|mins?|hours?|hrs?|days?))$/i
+  );
+
+  if (command === "help" || command === "commands") {
     return message.reply({
-      embeds: [embed("🔥 BLACK FIRE BOT", helpText)]
+      embeds: [makeEmbed(
+        "🔥 BLACK FIRE BOT",
+        [
+          "`help` — Show commands",
+          "`ping` — Check bot response",
+          "`userinfo @user` — User details",
+          "`serverinfo` — Server details",
+          "`ban @user reason` — Ban a member",
+          "`kick @user reason` — Kick a member",
+          "`timeout @user 10m reason` — Timeout",
+          "`untimeout @user` — Remove timeout",
+          "`warn @user reason` — Warn a member",
+          "`warnings @user` — View warnings",
+          "`clearwarnings @user` — Clear warnings",
+          "`purge 10` — Delete messages",
+          "`lock` / `unlock` — Lock or unlock channel",
+          "`role @user VIP` — Add a role",
+          "`rrole @user VIP` — Remove a role",
+          "`temprole @user VIP 10d` — Temporary role",
+          "`promote @user` / `demote @user` — Staff roles",
+          "",
+          "**Natural language examples**",
+          "`Give @user VIP role for 10 days`",
+          "`Remove VIP from @user`",
+          "`Ban @user for spamming`",
+          "`Timeout @user for 10 minutes`"
+        ].join("\n")
+      )]
     });
   }
 
-  // All commands below require staff permissions.
-  if (!hasStaffPermission(message.member)) return;
+  if (command === "ping") {
+    return message.reply(`🏓 Pong! ${client.ws.ping}ms`);
+  }
 
-  const target = getTarget(message);
-  const reason = args.slice(1).join(" ") || "No reason provided";
+  if (command === "userinfo") {
+    const member = getMember(message, args[0]) ||
+      message.member;
 
-  try {
-    // ================= BAN =================
-    if (command === "ban") {
-      if (!message.member.permissions.has(PermissionsBitField.Flags.BanMembers)) {
-        return message.reply("❌ You need the Ban Members permission.");
-      }
+    return message.reply({
+      embeds: [makeEmbed(
+        "👤 User Info",
+        `**User:** ${member.user.tag}\n**ID:** ${member.id}\n**Joined:** <t:${Math.floor(member.joinedTimestamp / 1000)}:R>`
+      )]
+    });
+  }
 
-      if (!target) return message.reply("❌ Mention a member to ban.");
-      if (!target.bannable) {
-        return message.reply("❌ I cannot ban this member. Check role hierarchy and my permissions.");
-      }
+  if (command === "serverinfo") {
+    return message.reply({
+      embeds: [makeEmbed(
+        "🏠 Server Info",
+        `**Name:** ${message.guild.name}\n**Members:** ${message.guild.memberCount}\n**Roles:** ${message.guild.roles.cache.size}\n**Channels:** ${message.guild.channels.cache.size}`
+      )]
+    });
+  }
 
-      await target.ban({ reason: `${reason} | By ${message.author.tag}` });
-      return message.reply({
-        embeds: [embed("🔨 Member Banned", `${target.user.tag}\nReason: ${reason}`, COLORS.red)]
-      });
+  if (naturalGive) {
+    if (!isStaff(message)) {
+      return message.reply("❌ You don't have permission.");
     }
 
-    // ================= KICK =================
-    if (command === "kick") {
-      if (!message.member.permissions.has(PermissionsBitField.Flags.KickMembers)) {
-        return message.reply("❌ You need the Kick Members permission.");
-      }
+    const member = message.guild.members.cache.get(naturalGive[1]);
+    const role = getRole(message.guild, naturalGive[2]);
+    const duration = naturalDuration(naturalGive[3]);
 
-      if (!target) return message.reply("❌ Mention a member to kick.");
-      if (!target.kickable) {
-        return message.reply("❌ I cannot kick this member. Check role hierarchy and my permissions.");
-      }
+    return giveTemporaryRole(message, member, role, duration);
+  }
 
-      await target.kick(`${reason} | By ${message.author.tag}`);
-      return message.reply({
-        embeds: [embed("👢 Member Kicked", `${target.user.tag}\nReason: ${reason}`, COLORS.red)]
-      });
+  if (naturalRemove) {
+    if (!isStaff(message)) {
+      return message.reply("❌ You don't have permission.");
     }
 
-    // ================= TIMEOUT / MUTE =================
-    if (["timeout", "mute"].includes(command)) {
-      if (!message.member.permissions.has(PermissionsBitField.Flags.ModerateMembers)) {
-        return message.reply("❌ You need the Moderate Members permission.");
-      }
+    const member = message.guild.members.cache.get(naturalRemove[2]);
+    const role = getRole(message.guild, naturalRemove[1]);
 
-      if (!target) return message.reply("❌ Mention a member.");
-      const duration = getDuration(args[1]);
-
-      if (!duration) {
-        return message.reply("❌ Use a duration like `10m`, `2h`, or `1d` (maximum 28 days).");
-      }
-
-      if (!target.moderatable) {
-        return message.reply("❌ I cannot timeout this member. Check role hierarchy and permissions.");
-      }
-
-      const timeoutReason = args.slice(2).join(" ") || "No reason provided";
-
-      await target.timeout(duration, `${timeoutReason} | By ${message.author.tag}`);
-
-      return message.reply({
-        embeds: [
-          embed(
-            "🔇 Member Timed Out",
-            `${target.user.tag}\nDuration: ${args[1]}\nReason: ${timeoutReason}`,
-            COLORS.red
-          )
-        ]
-      });
+    if (!message.member.permissions.has(
+      PermissionsBitField.Flags.ManageRoles
+    )) {
+      return message.reply("❌ You need Manage Roles permission.");
     }
 
-    // ================= REMOVE TIMEOUT =================
-    if (["untimeout", "unmute"].includes(command)) {
-      if (!message.member.permissions.has(PermissionsBitField.Flags.ModerateMembers)) {
-        return message.reply("❌ You need the Moderate Members permission.");
-      }
-
-      if (!target) return message.reply("❌ Mention a member.");
-      if (!target.moderatable) {
-        return message.reply("❌ I cannot remove this member's timeout. Check role hierarchy.");
-      }
-
-      await target.timeout(null, `Timeout removed by ${message.author.tag}`);
-      return message.reply(`✅ Timeout removed for ${target.user.tag}.`);
+    if (!member || !role) {
+      return message.reply("❌ Member or role not found.");
     }
 
-    // ================= WARN =================
-    if (command === "warn") {
-      if (!message.member.permissions.has(PermissionsBitField.Flags.ModerateMembers)) {
-        return message.reply("❌ You need the Moderate Members permission.");
-      }
-
-      if (!target) return message.reply("❌ Mention a member to warn.");
-
-      const key = `${message.guild.id}:${target.id}`;
-      const list = warnings.get(key) || [];
-
-      list.push({
-        reason: args.slice(1).join(" ") || "No reason provided",
-        moderator: message.author.tag,
-        date: new Date().toISOString()
-      });
-
-      warnings.set(key, list);
-
-      return message.reply({
-        embeds: [
-          embed(
-            "⚠️ Warning Issued",
-            `Member: ${target.user.tag}\nWarnings this session: ${list.length}\nReason: ${list[list.length - 1].reason}`,
-            COLORS.red
-          )
-        ]
-      });
+    if (
+      role.managed ||
+      role.position >= message.guild.members.me.roles.highest.position
+    ) {
+      return message.reply("❌ I can't remove that role.");
     }
 
-    // ================= VIEW WARNINGS =================
-    if (command === "warnings") {
-      if (!target) return message.reply("❌ Mention a member.");
+    await member.roles.remove(role);
+    return message.reply(`✅ Removed ${role} from ${member}.`);
+  }
 
-      const list = warnings.get(`${message.guild.id}:${target.id}`) || [];
+  if (!isStaff(message)) return;
 
-      if (!list.length) {
-        return message.reply(`✅ ${target.user.tag} has no warnings stored by this bot session.`);
-      }
-
-      const description = list
-        .map((warning, index) =>
-          `**${index + 1}.** ${warning.reason}\nModerator: ${warning.moderator}`
-        )
-        .join("\n\n");
-
-      return message.reply({
-        embeds: [embed(`⚠️ Warnings: ${target.user.tag}`, description, COLORS.red)]
-      });
+  if (command === "ban" || naturalBan) {
+    if (!message.member.permissions.has(
+      PermissionsBitField.Flags.BanMembers
+    )) {
+      return message.reply("❌ You need Ban Members permission.");
     }
 
-    // ================= CLEAR WARNINGS =================
-    if (command === "clearwarnings") {
-      if (!message.member.permissions.has(PermissionsBitField.Flags.ModerateMembers)) {
-        return message.reply("❌ You need the Moderate Members permission.");
-      }
+    const targetId = naturalBan
+      ? naturalBan[1]
+      : args[0]?.match(/\d{17,20}/)?.[0];
 
-      if (!target) return message.reply("❌ Mention a member.");
+    const target = targetId
+      ? await message.guild.members.fetch(targetId).catch(() => null)
+      : null;
 
-      warnings.delete(`${message.guild.id}:${target.id}`);
-      return message.reply(`✅ Cleared this session's warnings for ${target.user.tag}.`);
+    const reason = naturalBan
+      ? naturalBan[2]
+      : args.slice(1).join(" ") || "No reason provided";
+
+    if (!target || !canModerateTarget(message, target)) {
+      return message.reply("❌ Member not found or target is protected.");
     }
 
-    // ================= PURGE =================
-    if (command === "purge") {
-      if (!message.member.permissions.has(PermissionsBitField.Flags.ManageMessages)) {
-        return message.reply("❌ You need the Manage Messages permission.");
-      }
+    await target.ban({ reason });
+    return message.reply(`🔨 Banned **${target.user.tag}**. Reason: ${reason}`);
+  }
 
-      const amount = Number(args[0]);
-
-      if (!Number.isInteger(amount) || amount < 1 || amount > 99) {
-        return message.reply("❌ Use `purge 1` to `purge 99`.");
-      }
-
-      const deleted = await message.channel.bulkDelete(amount + 1, true);
-      const reply = await message.channel.send(`🧹 Deleted ${Math.max(0, deleted.size - 1)} messages.`);
-
-      setTimeout(() => reply.delete().catch(() => {}), 4000);
-      return;
+  if (command === "kick") {
+    if (!message.member.permissions.has(
+      PermissionsBitField.Flags.KickMembers
+    )) {
+      return message.reply("❌ You need Kick Members permission.");
     }
 
-    // ================= LOCK =================
-    if (command === "lock") {
-      if (!message.member.permissions.has(PermissionsBitField.Flags.ManageChannels)) {
-        return message.reply("❌ You need the Manage Channels permission.");
-      }
+    const target = getMember(message, args[0]);
+    const reason = args.slice(1).join(" ") || "No reason provided";
 
-      await message.channel.permissionOverwrites.edit(
-        message.guild.roles.everyone,
-        { SendMessages: false }
+    if (!target || !canModerateTarget(message, target)) {
+      return message.reply("❌ Member not found or target is protected.");
+    }
+
+    await target.kick(reason);
+    return message.reply(`👢 Kicked **${target.user.tag}**. Reason: ${reason}`);
+  }
+
+  if (command === "timeout" || command === "mute" || naturalTimeout) {
+    if (!message.member.permissions.has(
+      PermissionsBitField.Flags.ModerateMembers
+    )) {
+      return message.reply("❌ You need Moderate Members permission.");
+    }
+
+    const targetId = naturalTimeout
+      ? naturalTimeout[1]
+      : args[0]?.match(/\d{17,20}/)?.[0];
+
+    const target = targetId
+      ? await message.guild.members.fetch(targetId).catch(() => null)
+      : null;
+
+    const durationText = naturalTimeout ? naturalTimeout[2] : args[1];
+    const duration = naturalTimeout
+      ? naturalDuration(durationText)
+      : parseDuration(durationText);
+
+    const reason = naturalTimeout
+      ? "Timeout requested by staff"
+      : args.slice(2).join(" ") || "No reason provided";
+
+    if (!target || !canModerateTarget(message, target)) {
+      return message.reply("❌ Member not found or target is protected.");
+    }
+
+    if (!duration || duration > 28 * 24 * 60 * 60 * 1000) {
+      return message.reply("❌ Invalid duration. Example: `timeout @user 10m` (maximum 28 days).");
+    }
+
+    await target.timeout(duration, reason);
+    return message.reply(`⏳ Timed out **${target.user.tag}**.`);
+  }
+
+  if (command === "untimeout" || command === "unmute") {
+    if (!message.member.permissions.has(
+      PermissionsBitField.Flags.ModerateMembers
+    )) {
+      return message.reply("❌ You need Moderate Members permission.");
+    }
+
+    const target = getMember(message, args[0]);
+
+    if (!target || !canModerateTarget(message, target)) {
+      return message.reply("❌ Member not found or target is protected.");
+    }
+
+    await target.timeout(null);
+    return message.reply(`✅ Timeout removed for **${target.user.tag}**.`);
+  }
+
+  if (command === "warn") {
+    const target = getMember(message, args[0]);
+    const reason = args.slice(1).join(" ") || "No reason provided";
+
+    if (!target || !canModerateTarget(message, target)) {
+      return message.reply("❌ Member not found or target is protected.");
+    }
+
+    const key = warningKey(message.guild.id, target.id);
+    data.warnings[key] ||= [];
+    data.warnings[key].push({
+      reason,
+      moderator: message.author.id,
+      date: Date.now()
+    });
+
+    saveData();
+
+    return message.reply(`⚠️ Warned ${target}. Total warnings: ${data.warnings[key].length}`);
+  }
+
+  if (command === "warnings") {
+    const target = getMember(message, args[0]);
+    if (!target) return message.reply("❌ Member not found.");
+
+    const warnings = getWarnings(message.guild.id, target.id);
+
+    return message.reply({
+      embeds: [makeEmbed(
+        `Warnings: ${target.user.tag}`,
+        warnings.length
+          ? warnings.map((w, i) =>
+              `**${i + 1}.** ${w.reason} — <@${w.moderator}>`
+            ).join("\n")
+          : "No warnings found."
+      )]
+    });
+  }
+
+  if (command === "clearwarnings") {
+    const target = getMember(message, args[0]);
+    if (!target) return message.reply("❌ Member not found.");
+
+    delete data.warnings[warningKey(message.guild.id, target.id)];
+    saveData();
+
+    return message.reply(`✅ Cleared warnings for ${target}.`);
+}  if (command === "purge" || command === "clear") {
+    if (!message.member.permissions.has(
+      PermissionsBitField.Flags.ManageMessages
+    )) {
+      return message.reply("❌ You need Manage Messages permission.");
+    }
+
+    const amount = Number(args[0]);
+
+    if (!Number.isInteger(amount) || amount < 1 || amount > 100) {
+      return message.reply("❌ Usage: `purge 10` (1–100 messages).");
+    }
+
+    const deleted = await message.channel.bulkDelete(amount, true);
+    const reply = await message.channel.send(
+      `🧹 Deleted ${deleted.size} messages.`
+    );
+
+    setTimeout(() => reply.delete().catch(() => {}), 4000);
+    return;
+  }
+
+  if (command === "lock") {
+    if (!message.member.permissions.has(
+      PermissionsBitField.Flags.ManageChannels
+    )) {
+      return message.reply("❌ You need Manage Channels permission.");
+    }
+
+    await message.channel.permissionOverwrites.edit(
+      message.guild.roles.everyone,
+      { SendMessages: false }
+    );
+
+    return message.reply("🔒 Channel locked.");
+  }
+
+  if (command === "unlock") {
+    if (!message.member.permissions.has(
+      PermissionsBitField.Flags.ManageChannels
+    )) {
+      return message.reply("❌ You need Manage Channels permission.");
+    }
+
+    await message.channel.permissionOverwrites.edit(
+      message.guild.roles.everyone,
+      { SendMessages: null }
+    );
+
+    return message.reply("🔓 Channel unlocked.");
+  }
+
+  if (command === "temprole") {
+    if (!message.member.permissions.has(
+      PermissionsBitField.Flags.ManageRoles
+    )) {
+      return message.reply("❌ You need Manage Roles permission.");
+    }
+
+    const member = getMember(message, args[0]);
+    const duration = parseDuration(args[args.length - 1]);
+    const roleName = args.slice(1, -1).join(" ");
+    const role = getRole(message.guild, roleName);
+
+    return giveTemporaryRole(message, member, role, duration);
+  }
+
+  if (command === "role" || command === "addrole") {
+    if (!message.member.permissions.has(
+      PermissionsBitField.Flags.ManageRoles
+    )) {
+      return message.reply("❌ You need Manage Roles permission.");
+    }
+
+    const member = getMember(message, args[0]);
+    const role = getRole(message.guild, args.slice(1).join(" "));
+
+    if (!member || !role) {
+      return message.reply("❌ Usage: `role @user VIP`");
+    }
+
+    if (
+      role.managed ||
+      role.position >= message.guild.members.me.roles.highest.position
+    ) {
+      return message.reply("❌ I can't assign that role.");
+    }
+
+    await member.roles.add(role);
+    return message.reply(`✅ Added ${role} to ${member}.`);
+  }
+
+  if (command === "rrole" || command === "removerole") {
+    if (!message.member.permissions.has(
+      PermissionsBitField.Flags.ManageRoles
+    )) {
+      return message.reply("❌ You need Manage Roles permission.");
+    }
+
+    const member = getMember(message, args[0]);
+    const role = getRole(message.guild, args.slice(1).join(" "));
+
+    if (!member || !role) {
+      return message.reply("❌ Usage: `rrole @user VIP`");
+    }
+
+    if (
+      role.managed ||
+      role.position >= message.guild.members.me.roles.highest.position
+    ) {
+      return message.reply("❌ I can't remove that role.");
+    }
+
+    await member.roles.remove(role);
+    return message.reply(`✅ Removed ${role} from ${member}.`);
+  }
+
+  if (command === "promote" || command === "demote") {
+    if (!message.member.permissions.has(
+      PermissionsBitField.Flags.ManageRoles
+    )) {
+      return message.reply("❌ You need Manage Roles permission.");
+    }
+
+    const target = getMember(message, args[0]);
+
+    if (!target || !canModerateTarget(message, target)) {
+      return message.reply("❌ Member not found or target is protected.");
+    }
+
+    const roles = PROMOTION_ROLES.map(id =>
+      message.guild.roles.cache.get(id)
+    );
+
+    if (roles.some(role => !role)) {
+      return message.reply(
+        "❌ One or more configured staff role IDs are missing from this server."
       );
-
-      return message.reply("🔒 Channel locked.");
     }
 
-    // ================= UNLOCK =================
-    if (command === "unlock") {
-      if (!message.member.permissions.has(PermissionsBitField.Flags.ManageChannels)) {
-        return message.reply("❌ You need the Manage Channels permission.");
-      }
+    const currentIndex = PROMOTION_ROLES.findIndex(id =>
+      target.roles.cache.has(id)
+    );
 
-      await message.channel.permissionOverwrites.edit(
-        message.guild.roles.everyone,
-        { SendMessages: null }
-      );
-
-      return message.reply("🔓 Channel unlocked.");
-    }
-
-    // ================= ADD ROLE =================
-    if (command === "role") {
-      if (!message.member.permissions.has(PermissionsBitField.Flags.ManageRoles)) {
-        return message.reply("❌ You need the Manage Roles permission.");
-      }
-
-      if (!target) return message.reply("❌ Mention a member.");
-      const role = getRole(message, args);
-
-      if (!role) return message.reply("❌ Mention the role or provide its role ID.");
-      if (role.managed || role.position >= message.guild.members.me.roles.highest.position) {
-        return message.reply("❌ I cannot assign that role. Check the bot's role hierarchy.");
-      }
-
-      if (message.member.id !== message.guild.ownerId &&
-          role.position >= message.member.roles.highest.position) {
-        return message.reply("❌ You cannot assign a role equal to or above your highest role.");
-      }
-
-      await target.roles.add(role, `Role added by ${message.author.tag}`);
-      return message.reply(`✅ Added **${role.name}** to ${target.user.tag}.`);
-    }
-
-    // ================= REMOVE ROLE =================
-    if (command === "rrole") {
-      if (!message.member.permissions.has(PermissionsBitField.Flags.ManageRoles)) {
-        return message.reply("❌ You need the Manage Roles permission.");
-      }
-
-      if (!target) return message.reply("❌ Mention a member.");
-      const role = getRole(message, args);
-
-      if (!role) return message.reply("❌ Mention the role or provide its role ID.");
-      if (role.managed || role.position >= message.guild.members.me.roles.highest.position) {
-        return message.reply("❌ I cannot remove that role. Check the bot's role hierarchy.");
-      }
-
-      if (message.member.id !== message.guild.ownerId &&
-          role.position >= message.member.roles.highest.position) {
-        return message.reply("❌ You cannot remove a role equal to or above your highest role.");
-      }
-
-      await target.roles.remove(role, `Role removed by ${message.author.tag}`);
-      return message.reply(`✅ Removed **${role.name}** from ${target.user.tag}.`);
-    }
-
-    // ================= PROMOTE =================
     if (command === "promote") {
-      if (!message.member.permissions.has(PermissionsBitField.Flags.ManageRoles)) {
-        return message.reply("❌ You need the Manage Roles permission.");
+      const nextIndex = currentIndex + 1;
+
+      if (nextIndex >= PROMOTION_ROLES.length) {
+        return message.reply("❌ This member is already at the highest configured staff role.");
       }
 
-      if (!target) return message.reply("❌ Mention the member to promote.");
+      const nextRole = roles[nextIndex];
 
-      const roles = await getPromotionRoles(message.guild);
-
-      if (message.guild.members.me.roles.highest.position <= roles[0].position) {
-        return message.reply("❌ Move the bot's highest role above all five promotion roles.");
+      if (
+        nextRole.managed ||
+        nextRole.position >= message.guild.members.me.roles.highest.position
+      ) {
+        return message.reply("❌ Move my bot role above the staff roles first.");
       }
 
-      if (message.member.id !== message.guild.ownerId &&
-          message.member.roles.highest.position <= roles[0].position) {
-        return message.reply("❌ Your highest role must be above the promotion roles.");
+      if (currentIndex >= 0) {
+        await target.roles.remove(roles[currentIndex]);
       }
 
-      const current = roles.filter(role => target.roles.cache.has(role.id));
-
-      if (current.length !== 1) {
-        return message.reply(
-          `❌ ${target.user.tag} must have exactly one of the five promotion roles. Found: ${current.length}.`
-        );
-      }
-
-      const index = roles.findIndex(role => role.id === current[0].id);
-
-      if (index === 0) {
-        return message.reply("❌ This member is already at the highest promotion role.");
-      }
-
-      const nextRole = roles[index - 1];
-
-      if (nextRole.position >= message.guild.members.me.roles.highest.position) {
-        return message.reply("❌ My highest role must be above the role I am assigning.");
-      }
-
-      if (message.guild.ownerId !== message.author.id &&
-          nextRole.position >= message.member.roles.highest.position) {
-        return message.reply("❌ You cannot promote someone to a role equal to or above your highest role.");
-      }
-
-      await target.roles.remove(current[0]);
       await target.roles.add(nextRole);
-
-      return message.reply({
-        embeds: [
-          embed(
-            "⬆️ Staff Promoted",
-            `${target.user.tag}\n**${current[0].name}** → **${nextRole.name}**`,
-            COLORS.green
-          )
-        ]
-      });
+      return message.reply(`⬆️ Promoted ${target} to **${nextRole.name}**.`);
     }
 
-    // ================= DEMOTE =================
-    if (command === "demote") {
-      if (!message.member.permissions.has(PermissionsBitField.Flags.ManageRoles)) {
-        return message.reply("❌ You need the Manage Roles permission.");
-      }
-
-      if (!target) return message.reply("❌ Mention the member to demote.");
-
-      const roles = await getPromotionRoles(message.guild);
-
-      if (message.guild.members.me.roles.highest.position <= roles[0].position) {
-        return message.reply("❌ Move the bot's highest role above all five promotion roles.");
-      }
-
-      if (message.member.id !== message.guild.ownerId &&
-          message.member.roles.highest.position <= roles[0].position) {
-        return message.reply("❌ Your highest role must be above the promotion roles.");
-      }
-
-      const current = roles.filter(role => target.roles.cache.has(role.id));
-
-      if (current.length !== 1) {
-        return message.reply(
-          `❌ ${target.user.tag} must have exactly one of the five promotion roles. Found: ${current.length}.`
-        );
-      }
-
-      const index = roles.findIndex(role => role.id === current[0].id);
-
-      if (index === roles.length - 1) {
-        return message.reply("❌ This member is already at the lowest promotion role.");
-      }
-
-      const nextRole = roles[index + 1];
-
-      if (nextRole.position >= message.guild.members.me.roles.highest.position) {
-        return message.reply("❌ My highest role must be above the role I am assigning.");
-      }
-
-      if (message.guild.ownerId !== message.author.id &&
-          nextRole.position >= message.member.roles.highest.position) {
-        return message.reply("❌ You cannot demote someone to a role equal to or above your highest role.");
-      }
-
-      await target.roles.remove(current[0]);
-      await target.roles.add(nextRole);
-
-      return message.reply({
-        embeds: [
-          embed(
-            "⬇️ Staff Demoted",
-            `${target.user.tag}\n**${current[0].name}** → **${nextRole.name}**`,
-            COLORS.red
-          )
-        ]
-      });
+    if (currentIndex <= 0) {
+      return message.reply("❌ This member has no configured role to demote further.");
     }
 
-  } catch (error) {
-    console.error(`Command "${command}" failed:`, error);
+    const lowerRole = roles[currentIndex - 1];
 
-    const safeMessage = error.message?.includes("Promotion role ID")
-      ? "❌ One of the configured promotion role IDs was not found in this server."
-      : error.message?.includes("Role hierarchy mismatch")
-        ? `❌ ${error.message}`
-        : "❌ Command failed. Check the bot permissions, role hierarchy, and Railway logs.";
+    if (
+      lowerRole.managed ||
+      lowerRole.position >= message.guild.members.me.roles.highest.position
+    ) {
+      return message.reply("❌ Move my bot role above the staff roles first.");
+    }
 
-    return message.reply(safeMessage).catch(() => {});
+    await target.roles.remove(roles[currentIndex]);
+    await target.roles.add(lowerRole);
+
+    return message.reply(`⬇️ Demoted ${target} to **${lowerRole.name}**.`);
   }
 });
 
-// ================= LOGIN =================
+client.on("error", error => {
+  console.error("Discord client error:", error);
+});
+
+process.on("unhandledRejection", error => {
+  console.error("Unhandled rejection:", error);
+});
 
 if (!process.env.DISCORD_TOKEN) {
-  console.error("❌ DISCORD_TOKEN is missing from Railway Variables.");
+  console.error("Missing DISCORD_TOKEN environment variable.");
   process.exit(1);
 }
 
-client.login(process.env.DISCORD_TOKEN).catch(error => {
-  console.error("❌ Bot login failed. Check DISCORD_TOKEN in Railway Variables.", error);
-  process.exit(1);
-});
-            
+client.login(process.env.DISCORD_TOKEN);
