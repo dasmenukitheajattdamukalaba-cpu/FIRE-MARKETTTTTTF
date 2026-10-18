@@ -22,11 +22,11 @@ const PREFIX = ""; // No prefix, no slash commands
 
 // Highest role first, lowest role last
 const PROMOTION_ROLES = [
-  "1535921357991317544", // Head Admin
-  "1535921160133287946", // Admin
+  "1535922877499445289", // Head Admin
+  "1535920366550122596", // Admin
   "1555582030274764852", // Head Mod
-  "1535920366550122596",  // Mod
-  "1535922877499445289"   // Helper
+  "1535921160133287946",  // Mod
+  "1535921357991317544"   // Helper
 ];
 
 const warnings = new Map();
