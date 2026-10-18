@@ -74,11 +74,10 @@ client.once("ready", () => {
 client.on("messageCreate", async (message) => {
   if (!message.guild || message.author.bot) return;
   const isStaff =
-    message.member.permissions.has(PermissionsBitField.Flags.ModerateMembers) ||
-    message.member.permissions.has(PermissionsBitField.Flags.Administrator);
+  message.member.permissions.has(PermissionsBitField.Flags.ModerateMembers) ||
+  message.member.permissions.has(PermissionsBitField.Flags.Administrator);
 
-  if (!isStaff) return;
-
+if (!isStaff) return;
   const commands = [
     "help", "ping", "ban", "kick", "timeout", "mute",
     "untimeout", "unmute", "warn", "warnings", "clearwarnings",
