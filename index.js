@@ -73,9 +73,6 @@ client.once("ready", () => {
 
 client.on("messageCreate", async (message) => {
   if (!message.guild || message.author.bot) return;
-  const isStaff =
-  message.member.permissions.has(PermissionsBitField.Flags.ModerateMembers) ||
-  message.member.permissions.has(PermissionsBitField.Flags.Administrator);
 
 if (!isStaff) return;
   const commands = [
