@@ -25,7 +25,6 @@ const COLORS = {
 };
 
 // Promotion track: HIGHEST to LOWEST.
-// These names must exactly match your Discord roles.
 const PROMOTION_TRACK_ROLE_NAMES = [
   "🍷HEAD ADMIN🍷",
   "💫ADMIN💫",
@@ -166,7 +165,7 @@ function getPromotionTrack(guild) {
     return { error: "The promotion track contains duplicate roles." };
   }
 
-  // Check that configured order matches Discord's role hierarchy.
+  // Verify that the configured order matches Discord's hierarchy.
   for (let i = 0; i < track.length - 1; i++) {
     if (track[i].comparePositionTo(track[i + 1]) <= 0) {
       return {
@@ -250,7 +249,7 @@ async function changeRank(message, target, direction, botMember) {
 
   const newRole = track[newIndex];
 
-  // The moderator must be above both roles unless they own the server.
+  // Moderator must be above both roles unless they own the server.
   if (
     !isGuildOwner(message) &&
     (
@@ -265,7 +264,7 @@ async function changeRank(message, target, direction, botMember) {
     );
   }
 
-  // The bot must be above both roles.
+  // Bot must be above both roles.
   if (
     botMember.roles.highest.comparePositionTo(oldRole) <= 0 ||
     botMember.roles.highest.comparePositionTo(newRole) <= 0
@@ -277,7 +276,7 @@ async function changeRank(message, target, direction, botMember) {
     );
   }
 
-  // Add the new role first to avoid leaving the member without a track role.
+  // Add the new role first.
   await target.roles.add(
     newRole,
     `${direction} by ${message.author.tag}`
@@ -289,9 +288,11 @@ async function changeRank(message, target, direction, botMember) {
       `${direction} by ${message.author.tag}`
     );
   } catch (error) {
+    // Best-effort rollback if the old role could not be removed.
     await target.roles.remove(newRole).catch(rollbackError => {
       console.error("Role rollback failed:", rollbackError);
     });
+
     throw error;
   }
 
@@ -314,7 +315,7 @@ client.on("messageCreate", async message => {
   const content = message.content.trim();
   if (!content) return;
 
-  // Prefix-free commands: the first word is the command.
+  // Prefix-free commands: first word is the command.
   const args = content.split(/\s+/);
   const command = args[0].toLowerCase();
 
@@ -338,6 +339,7 @@ client.on("messageCreate", async message => {
         );
         return false;
       }
+
       return true;
     };
 
@@ -350,6 +352,7 @@ client.on("messageCreate", async message => {
         );
         return false;
       }
+
       return true;
     };
 
@@ -786,4 +789,10 @@ if (!process.env.DISCORD_TOKEN) {
 }
 
 client.login(process.env.DISCORD_TOKEN).catch(error => {
-  console.error("❌ Bot login failed. Check DISCORD_TOKEN in Railway Variables."
+  console.error(
+    "❌ Bot login failed. Check DISCORD_TOKEN in Railway Variables.",
+    error
+  );
+  process.exit(1);
+});
+          
