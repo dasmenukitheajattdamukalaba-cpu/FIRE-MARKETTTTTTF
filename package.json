@@ -1,5 +1,8 @@
 {
-  "name": "bot-discord-starter",
+  "engines": {
+    "node": "22.x"
+  },
+  "name": "black-fire-bot",
   "version": "1.0.0",
   "description": "A modular and scalable Discord bot starter template using Discord.js",
   "main": "index.js",
