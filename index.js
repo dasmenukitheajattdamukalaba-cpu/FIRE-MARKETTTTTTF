@@ -1,3 +1,4 @@
+
 const {
   Client,
   GatewayIntentBits,
@@ -14,7 +15,7 @@ const client = new Client({
   ]
 });
 
-// Warnings are temporary and reset when the bot restarts.
+// Warnings reset when the bot restarts.
 const warnings = new Map();
 
 const COLORS = {
@@ -23,13 +24,25 @@ const COLORS = {
   blue: 0x3080ff
 };
 
+// Promotion track: HIGHEST to LOWEST.
+// These names must exactly match your Discord roles.
+const PROMOTION_TRACK_ROLE_NAMES = [
+  "🍷HEAD ADMIN🍷",
+  "💫ADMIN💫",
+  "HEAD MODERATOR☠️",
+  "🛠️MODERATOR🛠️",
+  "🌛 HELPER",
+  "Ticket handler 🎟️",
+  "STAFF ⚕️"
+];
+
 const COMMANDS = [
   "help", "ping", "ban", "kick", "timeout", "mute",
   "untimeout", "unmute", "warn", "warnings", "clearwarnings",
-  "purge", "lock", "unlock", "role", "rrole"
+  "purge", "lock", "unlock", "role", "rrole",
+  "promote", "demote"
 ];
 
-// Staff permissions: ordinary members have none of these.
 const STAFF_PERMISSIONS = [
   PermissionsBitField.Flags.Administrator,
   PermissionsBitField.Flags.ModerateMembers,
@@ -64,6 +77,7 @@ function parseDuration(input) {
   if (!match) return null;
 
   const amount = Number(match[1]);
+
   const units = {
     s: 1000,
     m: 60000,
@@ -73,7 +87,9 @@ function parseDuration(input) {
 
   const duration = amount * units[match[2].toLowerCase()];
 
-  return duration > 0 && duration <= 28 * 86400000
+  return Number.isSafeInteger(duration) &&
+    duration > 0 &&
+    duration <= 28 * 86400000
     ? duration
     : null;
 }
@@ -92,25 +108,219 @@ async function getRole(message, argument) {
   return message.guild.roles.fetch(id).catch(() => null);
 }
 
+function isGuildOwner(message) {
+  return message.guild.ownerId === message.author.id;
+}
+
+function canManageTarget(message, target, botMember) {
+  const member = message.member;
+
+  if (target.id === message.guild.ownerId) return false;
+  if (target.id === message.author.id) return false;
+  if (target.id === client.user.id) return false;
+
+  if (
+    !isGuildOwner(message) &&
+    target.roles.highest.comparePositionTo(member.roles.highest) >= 0
+  ) {
+    return false;
+  }
+
+  if (
+    target.roles.highest.comparePositionTo(botMember.roles.highest) >= 0
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function getPromotionTrack(guild) {
+  const track = [];
+
+  for (const roleName of PROMOTION_TRACK_ROLE_NAMES) {
+    const matches = guild.roles.cache.filter(
+      role => role.name === roleName
+    );
+
+    if (matches.size !== 1) {
+      return {
+        error:
+          `Role "${roleName}" was not found or its name is duplicated. ` +
+          "Check the role names in index.js."
+      };
+    }
+
+    const role = matches.first();
+
+    if (role.managed || role.id === guild.id) {
+      return {
+        error: `Role "${roleName}" cannot be used in the promotion track.`
+      };
+    }
+
+    track.push(role);
+  }
+
+  if (new Set(track.map(role => role.id)).size !== track.length) {
+    return { error: "The promotion track contains duplicate roles." };
+  }
+
+  // Check that configured order matches Discord's role hierarchy.
+  for (let i = 0; i < track.length - 1; i++) {
+    if (track[i].comparePositionTo(track[i + 1]) <= 0) {
+      return {
+        error:
+          `Role order is incorrect: "${track[i].name}" must be above ` +
+          `"${track[i + 1].name}" in Server Settings → Roles.`
+      };
+    }
+  }
+
+  return { track };
+}
+
+async function changeRank(message, target, direction, botMember) {
+  if (!message.member.permissions.has(
+    PermissionsBitField.Flags.ManageRoles
+  )) {
+    return replyEmbed(
+      message,
+      "❌ You need Manage Roles permission.",
+      COLORS.red
+    );
+  }
+
+  if (!botMember.permissions.has(
+    PermissionsBitField.Flags.ManageRoles
+  )) {
+    return replyEmbed(
+      message,
+      "❌ I need Manage Roles permission.",
+      COLORS.red
+    );
+  }
+
+  if (!canManageTarget(message, target, botMember)) {
+    return replyEmbed(
+      message,
+      "❌ Your role hierarchy or my role hierarchy prevents this action.",
+      COLORS.red
+    );
+  }
+
+  const result = getPromotionTrack(message.guild);
+
+  if (result.error) {
+    return replyEmbed(message, `❌ ${result.error}`, COLORS.red);
+  }
+
+  const track = result.track;
+
+  const memberTrackRoles = track.filter(role =>
+    target.roles.cache.has(role.id)
+  );
+
+  if (memberTrackRoles.length !== 1) {
+    return replyEmbed(
+      message,
+      memberTrackRoles.length === 0
+        ? "❌ This member has no role from the promotion track."
+        : "❌ This member has multiple promotion-track roles. Fix their roles first.",
+      COLORS.red
+    );
+  }
+
+  const oldRole = memberTrackRoles[0];
+  const oldIndex = track.findIndex(role => role.id === oldRole.id);
+
+  const newIndex = direction === "promote"
+    ? oldIndex - 1
+    : oldIndex + 1;
+
+  if (newIndex < 0 || newIndex >= track.length) {
+    return replyEmbed(
+      message,
+      direction === "promote"
+        ? "❌ This member already has the highest track role."
+        : "❌ This member already has the lowest track role.",
+      COLORS.red
+    );
+  }
+
+  const newRole = track[newIndex];
+
+  // The moderator must be above both roles unless they own the server.
+  if (
+    !isGuildOwner(message) &&
+    (
+      message.member.roles.highest.comparePositionTo(oldRole) <= 0 ||
+      message.member.roles.highest.comparePositionTo(newRole) <= 0
+    )
+  ) {
+    return replyEmbed(
+      message,
+      "❌ Your highest role must be above both roles involved.",
+      COLORS.red
+    );
+  }
+
+  // The bot must be above both roles.
+  if (
+    botMember.roles.highest.comparePositionTo(oldRole) <= 0 ||
+    botMember.roles.highest.comparePositionTo(newRole) <= 0
+  ) {
+    return replyEmbed(
+      message,
+      "❌ Move my highest role above both promotion-track roles.",
+      COLORS.red
+    );
+  }
+
+  // Add the new role first to avoid leaving the member without a track role.
+  await target.roles.add(
+    newRole,
+    `${direction} by ${message.author.tag}`
+  );
+
+  try {
+    await target.roles.remove(
+      oldRole,
+      `${direction} by ${message.author.tag}`
+    );
+  } catch (error) {
+    await target.roles.remove(newRole).catch(rollbackError => {
+      console.error("Role rollback failed:", rollbackError);
+    });
+    throw error;
+  }
+
+  return replyEmbed(
+    message,
+    direction === "promote"
+      ? `⬆️ **${target.user.tag}** has been promoted from **${oldRole.name}** to **${newRole.name}**.`
+      : `⬇️ **${target.user.tag}** has been demoted from **${oldRole.name}** to **${newRole.name}**.`,
+    COLORS.green
+  );
+}
+
 client.once("ready", () => {
   console.log(`🔥 BLACK FIRE BOT online as ${client.user.tag}`);
 });
 
 client.on("messageCreate", async message => {
-  // Ignore DMs and messages from bots.
   if (!message.guild || message.author.bot) return;
 
   const content = message.content.trim();
   if (!content) return;
 
+  // Prefix-free commands: the first word is the command.
   const args = content.split(/\s+/);
   const command = args[0].toLowerCase();
 
-  // Ignore every message that is not a recognised command.
   if (!COMMANDS.includes(command)) return;
 
-  // IMPORTANT: This runs BEFORE any command or permission error reply.
-  // Normal members get no response from the bot.
+  // Ordinary members receive no command or permission-error replies.
   if (!isStaff(message.member)) return;
 
   try {
@@ -171,9 +381,11 @@ client.on("messageCreate", async message => {
         "**Role Management**",
         "`role @user @role` — Add a role",
         "`rrole @user @role` — Remove a role",
+        "`promote @user` — Move up one track role",
+        "`demote @user` — Move down one track role",
         "",
         "**Duration format:** `10s`, `10m`, `2h`, `1d`",
-        "**Access:** Staff and authorised moderators only."
+        "**Access:** Staff with the required Discord permissions."
       ].join("\n"));
     }
 
@@ -201,7 +413,9 @@ client.on("messageCreate", async message => {
       lock: PermissionsBitField.Flags.ManageChannels,
       unlock: PermissionsBitField.Flags.ManageChannels,
       role: PermissionsBitField.Flags.ManageRoles,
-      rrole: PermissionsBitField.Flags.ManageRoles
+      rrole: PermissionsBitField.Flags.ManageRoles,
+      promote: PermissionsBitField.Flags.ManageRoles,
+      demote: PermissionsBitField.Flags.ManageRoles
     };
 
     if (permissionMap[command]) {
@@ -211,7 +425,8 @@ client.on("messageCreate", async message => {
     // TARGET-BASED COMMANDS
     const targetCommands = [
       "ban", "kick", "timeout", "mute", "untimeout", "unmute",
-      "warn", "warnings", "clearwarnings", "role", "rrole"
+      "warn", "warnings", "clearwarnings", "role", "rrole",
+      "promote", "demote"
     ];
 
     if (targetCommands.includes(command)) {
@@ -241,6 +456,16 @@ client.on("messageCreate", async message => {
         );
       }
 
+      // PROMOTE / DEMOTE
+      if (command === "promote" || command === "demote") {
+        return await changeRank(
+          message,
+          target,
+          command,
+          botMember
+        );
+      }
+
       // Check moderator hierarchy.
       if (
         message.guild.ownerId !== message.author.id &&
@@ -254,7 +479,9 @@ client.on("messageCreate", async message => {
       }
 
       // Check bot hierarchy for member moderation.
-      if (target.roles.highest.position >= botMember.roles.highest.position) {
+      if (
+        target.roles.highest.position >= botMember.roles.highest.position
+      ) {
         return replyEmbed(
           message,
           "❌ My highest role must be above the target's role.",
@@ -276,7 +503,7 @@ client.on("messageCreate", async message => {
 
         return replyEmbed(
           message,
-          `🔨 Banned **${target.user.tag}**.\nReason: ${reason}`,
+          `🔨 ${target.user.tag} has been banned. Reason: ${reason}`,
           COLORS.green
         );
       }
@@ -291,7 +518,7 @@ client.on("messageCreate", async message => {
 
         return replyEmbed(
           message,
-          `👢 Kicked **${target.user.tag}**.\nReason: ${reason}`,
+          `👢 ${target.user.tag} has been kicked. Reason: ${reason}`,
           COLORS.green
         );
       }
@@ -322,7 +549,7 @@ client.on("messageCreate", async message => {
 
         return replyEmbed(
           message,
-          `🔇 Timed out **${target.user.tag}** for **${args[2]}**.\nReason: ${timeoutReason}`,
+          `🔇 ${target.user.tag} has been timed out for ${args[2]}. Reason: ${timeoutReason}`,
           COLORS.green
         );
       }
@@ -340,7 +567,7 @@ client.on("messageCreate", async message => {
 
         return replyEmbed(
           message,
-          `🔊 Timeout removed for **${target.user.tag}**.`,
+          `🔊 Timeout removed for ${target.user.tag}.`,
           COLORS.green
         );
       }
@@ -360,7 +587,7 @@ client.on("messageCreate", async message => {
 
         return replyEmbed(
           message,
-          `⚠️ **${target.user.tag}** has ${list.length} warning(s).\nReason: ${reason}`,
+          `⚠️ ${target.user.tag} has been warned. Reason: ${reason}`,
           COLORS.green
         );
       }
@@ -378,7 +605,7 @@ client.on("messageCreate", async message => {
 
         return replyEmbed(
           message,
-          `Warnings for **${target.user.tag}**:\n${description}`
+          `Warnings for ${target.user.tag}:\n${description}`
         );
       }
 
@@ -388,7 +615,7 @@ client.on("messageCreate", async message => {
 
         return replyEmbed(
           message,
-          `🧹 Warnings cleared for **${target.user.tag}**.`,
+          `🧹 Warnings cleared for ${target.user.tag}.`,
           COLORS.green
         );
       }
@@ -444,7 +671,7 @@ client.on("messageCreate", async message => {
 
           return replyEmbed(
             message,
-            `✅ Added **${role.name}** to **${target.user.tag}**.`,
+            `✅ Added ${role.name} to ${target.user.tag}.`,
             COLORS.green
           );
         }
@@ -456,7 +683,7 @@ client.on("messageCreate", async message => {
 
         return replyEmbed(
           message,
-          `✅ Removed **${role.name}** from **${target.user.tag}**.`,
+          `✅ Removed ${role.name} from ${target.user.tag}.`,
           COLORS.green
         );
       }
@@ -558,4 +785,5 @@ if (!process.env.DISCORD_TOKEN) {
   process.exit(1);
 }
 
-client.login(process.env.DISCORD_TOKEN);
+client.login(process.env.DISCORD_TOKEN).catch(error => {
+  console.error("❌ Bot login failed. Check DISCORD_TOKEN in Railway Variables."
