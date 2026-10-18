@@ -33,4 +33,6 @@ client.on("messageCreate", async (message) => {
   }
 });
 
+console.log("Token loaded:", typeof process.env.DISCORD_TOKEN);
+console.log("Token length:", process.env.DISCORD_TOKEN?.length);
 client.login(process.env.DISCORD_TOKEN);
