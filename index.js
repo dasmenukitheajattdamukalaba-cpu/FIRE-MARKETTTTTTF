@@ -40,7 +40,6 @@ function loadData() {
 }
 
 const data = loadData();
-
 data.warnings ||= {};
 data.temporaryRoles ||= [];
 
@@ -71,9 +70,7 @@ function parseDuration(text) {
   };
 
   const result = amount * multiplier[unit];
-
-  if (!Number.isFinite(result) || result <= 0) return null;
-  return result;
+  return Number.isFinite(result) && result > 0 ? result : null;
 }
 
 function naturalDuration(text) {
@@ -87,7 +84,6 @@ function naturalDuration(text) {
   const unit = match[2].toLowerCase();
 
   let multiplier = 1000;
-
   if (unit.startsWith("min")) multiplier = 60000;
   else if (unit.startsWith("h")) multiplier = 3600000;
   else if (unit.startsWith("d")) multiplier = 86400000;
@@ -107,7 +103,6 @@ function getRole(guild, roleName) {
     .trim();
 
   const id = cleanName.match(/^\d{17,20}$/)?.[0];
-
   if (id) return guild.roles.cache.get(id) || null;
 
   return guild.roles.cache.find(
@@ -116,27 +111,17 @@ function getRole(guild, roleName) {
 }
 
 function isStaff(message) {
-  return message.member.permissions.has(
-    PermissionsBitField.Flags.Administrator
-  ) ||
-  message.member.permissions.has(
-    PermissionsBitField.Flags.ManageGuild
-  ) ||
-  message.member.permissions.has(
-    PermissionsBitField.Flags.ManageMessages
-  ) ||
-  message.member.permissions.has(
-    PermissionsBitField.Flags.ModerateMembers
-  ) ||
-  message.member.permissions.has(
-    PermissionsBitField.Flags.BanMembers
-  ) ||
-  message.member.permissions.has(
-    PermissionsBitField.Flags.KickMembers
-  ) ||
-  message.member.permissions.has(
+  const permissions = message.member.permissions;
+
+  return [
+    PermissionsBitField.Flags.Administrator,
+    PermissionsBitField.Flags.ManageGuild,
+    PermissionsBitField.Flags.ManageMessages,
+    PermissionsBitField.Flags.ModerateMembers,
+    PermissionsBitField.Flags.BanMembers,
+    PermissionsBitField.Flags.KickMembers,
     PermissionsBitField.Flags.ManageRoles
-  );
+  ].some(permission => permissions.has(permission));
 }
 
 function canModerateTarget(message, target) {
@@ -170,9 +155,7 @@ async function giveTemporaryRole(message, member, role, duration) {
   }
 
   if (!member || !role || !duration) {
-    return message.reply(
-      "Usage: `temprole @user VIP 10d`"
-    );
+    return message.reply("Usage: `temprole @user VIP 10d`");
   }
 
   if (
@@ -194,10 +177,7 @@ async function giveTemporaryRole(message, member, role, duration) {
   });
 
   saveData();
-
-  return message.reply(
-    `✅ Gave ${role} to ${member} temporarily.`
-  );
+  return message.reply(`✅ Gave ${role} to ${member} temporarily.`);
 }
 
 async function removeExpiredRoles() {
@@ -214,8 +194,7 @@ async function removeExpiredRoles() {
           .catch(() => null);
 
         if (member && member.roles.cache.has(item.roleId)) {
-          await member.roles.remove(item.roleId)
-            .catch(console.error);
+          await member.roles.remove(item.roleId).catch(console.error);
         }
       }
     } catch (error) {
@@ -267,6 +246,8 @@ client.on("messageCreate", async message => {
           "`ping` — Check bot response",
           "`userinfo @user` — User details",
           "`serverinfo` — Server details",
+          "`say Your message` — Send a message as the bot",
+          "`announce Your message` — Send an announcement embed",
           "`ban @user reason` — Ban a member",
           "`kick @user reason` — Kick a member",
           "`timeout @user 10m reason` — Timeout",
@@ -296,8 +277,7 @@ client.on("messageCreate", async message => {
   }
 
   if (command === "userinfo") {
-    const member = getMember(message, args[0]) ||
-      message.member;
+    const member = getMember(message, args[0]) || message.member;
 
     return message.reply({
       embeds: [makeEmbed(
@@ -314,6 +294,50 @@ client.on("messageCreate", async message => {
         `**Name:** ${message.guild.name}\n**Members:** ${message.guild.memberCount}\n**Roles:** ${message.guild.roles.cache.size}\n**Channels:** ${message.guild.channels.cache.size}`
       )]
     });
+  }
+
+  // SAY COMMAND
+  if (command === "say") {
+    if (!message.member.permissions.has(
+      PermissionsBitField.Flags.ManageMessages
+    )) {
+      return message.reply("❌ You need Manage Messages permission.");
+    }
+
+    const text = args.join(" ");
+    if (!text) return message.reply("❌ Usage: `say Your message here`");
+
+    await message.delete().catch(() => {});
+
+    return message.channel.send({
+      content: text,
+      allowedMentions: { parse: [] }
+    });
+  }
+
+  // ANNOUNCE COMMAND
+  if (command === "announce") {
+    if (!message.member.permissions.has(
+      PermissionsBitField.Flags.ManageGuild
+    )) {
+      return message.reply("❌ You need Manage Server permission.");
+    }
+
+    const text = args.join(" ");
+    if (!text) {
+      return message.reply("❌ Usage: `announce Your announcement here`");
+    }
+
+    await message.delete().catch(() => {});
+
+    const announcement = new EmbedBuilder()
+      .setColor(0xE53935)
+      .setTitle("📢 BLACK FIRE ANNOUNCEMENT")
+      .setDescription(text)
+      .setFooter({ text: `Announced by ${message.author.username}` })
+      .setTimestamp();
+
+    return message.channel.send({ embeds: [announcement] });
   }
 
   if (naturalGive) {
@@ -333,14 +357,14 @@ client.on("messageCreate", async message => {
       return message.reply("❌ You don't have permission.");
     }
 
-    const member = message.guild.members.cache.get(naturalRemove[2]);
-    const role = getRole(message.guild, naturalRemove[1]);
-
     if (!message.member.permissions.has(
       PermissionsBitField.Flags.ManageRoles
     )) {
       return message.reply("❌ You need Manage Roles permission.");
     }
+
+    const member = message.guild.members.cache.get(naturalRemove[2]);
+    const role = getRole(message.guild, naturalRemove[1]);
 
     if (!member || !role) {
       return message.reply("❌ Member or role not found.");
@@ -474,7 +498,6 @@ client.on("messageCreate", async message => {
     });
 
     saveData();
-
     return message.reply(`⚠️ Warned ${target}. Total warnings: ${data.warnings[key].length}`);
   }
 
@@ -504,7 +527,7 @@ client.on("messageCreate", async message => {
     saveData();
 
     return message.reply(`✅ Cleared warnings for ${target}.`);
-}  if (command === "purge" || command === "clear") {
+      }  if (command === "purge" || command === "clear") {
     if (!message.member.permissions.has(
       PermissionsBitField.Flags.ManageMessages
     )) {
@@ -652,7 +675,9 @@ client.on("messageCreate", async message => {
       const nextIndex = currentIndex + 1;
 
       if (nextIndex >= PROMOTION_ROLES.length) {
-        return message.reply("❌ This member is already at the highest configured staff role.");
+        return message.reply(
+          "❌ This member is already at the highest configured staff role."
+        );
       }
 
       const nextRole = roles[nextIndex];
@@ -661,7 +686,9 @@ client.on("messageCreate", async message => {
         nextRole.managed ||
         nextRole.position >= message.guild.members.me.roles.highest.position
       ) {
-        return message.reply("❌ Move my bot role above the staff roles first.");
+        return message.reply(
+          "❌ Move my bot role above the staff roles first."
+        );
       }
 
       if (currentIndex >= 0) {
@@ -669,11 +696,15 @@ client.on("messageCreate", async message => {
       }
 
       await target.roles.add(nextRole);
-      return message.reply(`⬆️ Promoted ${target} to **${nextRole.name}**.`);
+      return message.reply(
+        `⬆️ Promoted ${target} to **${nextRole.name}**.`
+      );
     }
 
     if (currentIndex <= 0) {
-      return message.reply("❌ This member has no configured role to demote further.");
+      return message.reply(
+        "❌ This member has no configured role to demote further."
+      );
     }
 
     const lowerRole = roles[currentIndex - 1];
@@ -682,13 +713,17 @@ client.on("messageCreate", async message => {
       lowerRole.managed ||
       lowerRole.position >= message.guild.members.me.roles.highest.position
     ) {
-      return message.reply("❌ Move my bot role above the staff roles first.");
+      return message.reply(
+        "❌ Move my bot role above the staff roles first."
+      );
     }
 
     await target.roles.remove(roles[currentIndex]);
     await target.roles.add(lowerRole);
 
-    return message.reply(`⬇️ Demoted ${target} to **${lowerRole.name}**.`);
+    return message.reply(
+      `⬇️ Demoted ${target} to **${lowerRole.name}**.`
+    );
   }
 });
 
