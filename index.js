@@ -73,7 +73,7 @@ client.once("ready", () => {
 
 client.on("messageCreate", async (message) => {
   if (!message.guild || message.author.bot) return;
-
+if (!message.guild || message.author.bot) return;
   const content = message.content.trim();
   const args = content.split(/\s+/);
   const command = args[0].toLowerCase();
