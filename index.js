@@ -27,7 +27,7 @@ const PROMOTION_ROLES = [
   "1535922877499445289"  // Head Admin
 ];
 
-const LOG_CHANNEL_ID = "YOUR_LOG_CHANNEL_ID_HERE"; // <-- apna log channel ID yahan daal
+const LOG_CHANNEL_ID = "1562005508532215808"; // <-- apna log channel ID yahan daal
 
 function loadData() {
   try {
