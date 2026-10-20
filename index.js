@@ -27,6 +27,8 @@ const PROMOTION_ROLES = [
   "1535922877499445289"  // Head Admin
 ];
 
+const LOG_CHANNEL_ID = "YOUR_LOG_CHANNEL_ID_HERE"; // <-- apna log channel ID yahan daal
+
 function loadData() {
   try {
     if (fs.existsSync(DATA_FILE)) {
@@ -36,12 +38,13 @@ function loadData() {
     console.error("Data load error:", error);
   }
 
-  return { warnings: {}, temporaryRoles: [] };
+  return { warnings: {}, temporaryRoles: [], caseCount: 0 };
 }
 
 const data = loadData();
 data.warnings ||= {};
 data.temporaryRoles ||= [];
+data.caseCount ||= 0;
 
 function saveData() {
   fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2));
@@ -53,6 +56,34 @@ function makeEmbed(title, description, color = 0xE53935) {
     .setTitle(title)
     .setDescription(description)
     .setTimestamp();
+}
+
+async function sendModLog(message, action, target, details = "") {
+  try {
+    const logChannel = message.guild.channels.cache.get(LOG_CHANNEL_ID);
+    if (!logChannel) return;
+
+    data.caseCount = (data.caseCount || 0) + 1;
+    saveData();
+
+    const targetText = target
+      ? `${target} (${target.user ? target.user.tag : (target.tag || target.id)})`
+      : "N/A";
+
+    const embed = new EmbedBuilder()
+      .setColor(0xE53935)
+      .setTitle(`📋 Case #${data.caseCount} | ${action}`)
+      .addFields(
+        { name: "Moderator", value: `${message.author} (${message.author.tag})`, inline: true },
+        { name: "Target", value: targetText, inline: true },
+        { name: "Details", value: details || "No details provided" }
+      )
+      .setTimestamp();
+
+    await logChannel.send({ embeds: [embed] });
+  } catch (error) {
+    console.error("Mod log error:", error);
+  }
 }
 
 function parseDuration(text) {
@@ -120,7 +151,8 @@ function isStaff(message) {
     PermissionsBitField.Flags.ModerateMembers,
     PermissionsBitField.Flags.BanMembers,
     PermissionsBitField.Flags.KickMembers,
-    PermissionsBitField.Flags.ManageRoles
+    PermissionsBitField.Flags.ManageRoles,
+    PermissionsBitField.Flags.ManageChannels
   ].some(permission => permissions.has(permission));
 }
 
@@ -177,6 +209,9 @@ async function giveTemporaryRole(message, member, role, duration) {
   });
 
   saveData();
+
+  await sendModLog(message, "Temporary Role Added", member, `Role: ${role.name}\nDuration: ${Math.round(duration / 60000)} min`);
+
   return message.reply(`✅ Gave ${role} to ${member} temporarily.`);
 }
 
@@ -378,6 +413,9 @@ client.on("messageCreate", async message => {
     }
 
     await member.roles.remove(role);
+
+    await sendModLog(message, "Role Removed", member, `Role: ${role.name}`);
+
     return message.reply(`✅ Removed ${role} from ${member}.`);
   }
 
@@ -407,6 +445,9 @@ client.on("messageCreate", async message => {
     }
 
     await target.ban({ reason });
+
+    await sendModLog(message, "Ban", target, `Reason: ${reason}`);
+
     return message.reply(`🔨 Banned **${target.user.tag}**. Reason: ${reason}`);
   }
 
@@ -425,10 +466,11 @@ client.on("messageCreate", async message => {
     }
 
     await target.kick(reason);
-    return message.reply(`👢 Kicked **${target.user.tag}**. Reason: ${reason}`);
-  }
 
-  if (command === "timeout" || command === "mute" || naturalTimeout) {
+    await sendModLog(message, "Kick", target, `Reason: ${reason}`);
+
+    return message.reply(`👢 Kicked **${target.user.tag}**. Reason: ${reason}`);
+    }  if (command === "timeout" || command === "mute" || naturalTimeout) {
     if (!message.member.permissions.has(
       PermissionsBitField.Flags.ModerateMembers
     )) {
@@ -461,6 +503,9 @@ client.on("messageCreate", async message => {
     }
 
     await target.timeout(duration, reason);
+
+    await sendModLog(message, "Timeout", target, `Duration: ${Math.round(duration / 60000)} min\nReason: ${reason}`);
+
     return message.reply(`⏳ Timed out **${target.user.tag}**.`);
   }
 
@@ -478,6 +523,9 @@ client.on("messageCreate", async message => {
     }
 
     await target.timeout(null);
+
+    await sendModLog(message, "Timeout Removed", target);
+
     return message.reply(`✅ Timeout removed for **${target.user.tag}**.`);
   }
 
@@ -498,6 +546,9 @@ client.on("messageCreate", async message => {
     });
 
     saveData();
+
+    await sendModLog(message, "Warn", target, `Reason: ${reason}\nTotal warnings: ${data.warnings[key].length}`);
+
     return message.reply(`⚠️ Warned ${target}. Total warnings: ${data.warnings[key].length}`);
   }
 
@@ -526,8 +577,12 @@ client.on("messageCreate", async message => {
     delete data.warnings[warningKey(message.guild.id, target.id)];
     saveData();
 
+    await sendModLog(message, "Warnings Cleared", target);
+
     return message.reply(`✅ Cleared warnings for ${target}.`);
-      }  if (command === "purge" || command === "clear") {
+  }
+
+  if (command === "purge" || command === "clear") {
     if (!message.member.permissions.has(
       PermissionsBitField.Flags.ManageMessages
     )) {
@@ -545,6 +600,8 @@ client.on("messageCreate", async message => {
       `🧹 Deleted ${deleted.size} messages.`
     );
 
+    await sendModLog(message, "Purge", null, `Channel: ${message.channel}\nAmount: ${deleted.size}`);
+
     setTimeout(() => reply.delete().catch(() => {}), 4000);
     return;
   }
@@ -561,6 +618,8 @@ client.on("messageCreate", async message => {
       { SendMessages: false }
     );
 
+    await sendModLog(message, "Channel Locked", null, `Channel: ${message.channel}`);
+
     return message.reply("🔒 Channel locked.");
   }
 
@@ -575,6 +634,8 @@ client.on("messageCreate", async message => {
       message.guild.roles.everyone,
       { SendMessages: null }
     );
+
+    await sendModLog(message, "Channel Unlocked", null, `Channel: ${message.channel}`);
 
     return message.reply("🔓 Channel unlocked.");
   }
@@ -616,6 +677,9 @@ client.on("messageCreate", async message => {
     }
 
     await member.roles.add(role);
+
+    await sendModLog(message, "Role Added", member, `Role: ${role.name}`);
+
     return message.reply(`✅ Added ${role} to ${member}.`);
   }
 
@@ -641,6 +705,9 @@ client.on("messageCreate", async message => {
     }
 
     await member.roles.remove(role);
+
+    await sendModLog(message, "Role Removed", member, `Role: ${role.name}`);
+
     return message.reply(`✅ Removed ${role} from ${member}.`);
   }
 
@@ -696,6 +763,9 @@ client.on("messageCreate", async message => {
       }
 
       await target.roles.add(nextRole);
+
+      await sendModLog(message, "Promoted", target, `New role: ${nextRole.name}`);
+
       return message.reply(
         `⬆️ Promoted ${target} to **${nextRole.name}**.`
       );
@@ -721,6 +791,8 @@ client.on("messageCreate", async message => {
     await target.roles.remove(roles[currentIndex]);
     await target.roles.add(lowerRole);
 
+    await sendModLog(message, "Demoted", target, `New role: ${lowerRole.name}`);
+
     return message.reply(
       `⬇️ Demoted ${target} to **${lowerRole.name}**.`
     );
@@ -740,4 +812,4 @@ if (!process.env.DISCORD_TOKEN) {
   process.exit(1);
 }
 
-client.login(process.env.DISCORD_TOKEN);
+client.login(process.env.DISCORD_TOKEN)
